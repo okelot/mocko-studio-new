@@ -26,6 +26,9 @@ export interface Brand {
   cmsEmail: string | null;
   cmsPassword: string | null;
   cmsCollectionSlug: string | null;
+  linkedinOrganizationId: string | null;
+  linkedinAccessToken: string | null;
+  linkedinAccessTokenExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -24,6 +24,9 @@ const demoBrands: Brand[] = [
     cmsEmail: "admin@mocko.ai",
     cmsPassword: "",
     cmsCollectionSlug: "posts",
+    linkedinOrganizationId: null,
+    linkedinAccessToken: null,
+    linkedinAccessTokenExpiresAt: null,
     createdAt: now,
     updatedAt: now,
   },
@@ -153,6 +156,12 @@ function normalizeStudioData(data: StudioData): StudioData {
           `https://mocko.ai/blog/${slug}`,
       };
     }),
+    brands: data.brands.map((brand) => ({
+      ...brand,
+      linkedinOrganizationId: (brand as Partial<Brand>).linkedinOrganizationId || null,
+      linkedinAccessToken: (brand as Partial<Brand>).linkedinAccessToken || null,
+      linkedinAccessTokenExpiresAt: (brand as Partial<Brand>).linkedinAccessTokenExpiresAt || null,
+    })),
     images: data.images.map((image) => ({
       ...image,
       userFeedback: (image as Partial<GeneratedImage>).userFeedback || "",

@@ -112,6 +112,33 @@ function AppShell() {
   }, [data, hydrated]);
 
   useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    const linkedinStatus = url.searchParams.get("linkedin");
+    if (!linkedinStatus) {
+      return;
+    }
+
+    if (linkedinStatus === "connected") {
+      toast("LinkedIn connected. Reloading brand settings.");
+      if (data.user) {
+        void postJson<{ data: StudioData }>("/api/studio", { user: data.user }).then((result) => {
+          setData(result.data);
+        });
+      }
+    } else if (linkedinStatus === "error") {
+      toast(url.searchParams.get("message") || "LinkedIn connection failed", "error");
+    }
+
+    url.searchParams.delete("linkedin");
+    url.searchParams.delete("message");
+    window.history.replaceState({}, "", url.toString());
+  }, [data.user, hydrated, toast]);
+
+  useEffect(() => {
     if (!hydrated || !data.user || loadedDbUserRef.current === data.user.id) {
       return;
     }
@@ -432,11 +459,16 @@ function GeneratePage({
   const [tweakPrompts, setTweakPrompts] = useState<Record<number, string>>({});
   const [isEdited, setIsEdited] = useState(false);
   const [isSendingToN8n, setIsSendingToN8n] = useState(false);
+  const [isPublishingToLinkedIn, setIsPublishingToLinkedIn] = useState(false);
+  const [draftLinkedInOrgId, setDraftLinkedInOrgId] = useState("");
+  const [draftLinkedInText, setDraftLinkedInText] = useState("");
+  const [draftLinkedInImageId, setDraftLinkedInImageId] = useState("");
   const draft = data.runs.find((run) => run.id === data.activeRunId) ?? null;
   const draftImages = draft
     ? data.images.filter((image) => image.runId === draft.id).sort((a, b) => a.angleId - b.angleId)
     : [];
   const draftImageUrlCount = draftImages.filter((image) => image.imageUrl).length;
+  const draftBrand = draft ? data.brands.find((brand) => brand.id === draft.brandId) ?? null : null;
   const selectedBrand = data.brands.find((brand) => brand.id === brandId) ?? null;
   const selectedBrandReadyForImages = selectedBrand ? hasBrandImageInputs(selectedBrand) : false;
 
@@ -445,6 +477,20 @@ function GeneratePage({
       setBrandId(data.brands[0].id);
     }
   }, [brandId, data.brands]);
+
+  useEffect(() => {
+    if (!draft) {
+      setDraftLinkedInOrgId("");
+      setDraftLinkedInText("");
+      setDraftLinkedInImageId("");
+      return;
+    }
+
+    const firstImage = draftImages.find((image) => image.imageUrl);
+    setDraftLinkedInOrgId(draftBrand?.linkedinOrganizationId ?? "");
+    setDraftLinkedInText(defaultLinkedInText(draft));
+    setDraftLinkedInImageId(firstImage?.id ?? "");
+  }, [draft?.id, draftBrand?.linkedinOrganizationId]);
 
   function autofillArticleGeneration() {
     setTopic(articleGenerationAutofill.topic);
@@ -676,6 +722,47 @@ function GeneratePage({
     }
   }
 
+  async function publishDraftToLinkedIn() {
+    if (!draft || !draftBrand) {
+      toast("Run or brand not found", "error");
+      return;
+    }
+
+    const selectedImage = draftImages.find((image) => image.id === draftLinkedInImageId);
+    if (!draftBrand.linkedinAccessToken) {
+      toast("Connect LinkedIn in Brands first", "error");
+      return;
+    }
+    if (!draftLinkedInOrgId.trim()) {
+      toast("Enter the LinkedIn organization ID", "error");
+      return;
+    }
+    if (!selectedImage?.imageUrl) {
+      toast("Select a generated image for LinkedIn", "error");
+      return;
+    }
+    if (!draftLinkedInText.trim()) {
+      toast("Add LinkedIn post text", "error");
+      return;
+    }
+
+    setIsPublishingToLinkedIn(true);
+    try {
+      await postJson<{ postId: string }>("/api/publish-linkedin", {
+        accessToken: draftBrand.linkedinAccessToken,
+        organizationId: draftLinkedInOrgId,
+        commentary: draftLinkedInText,
+        imageUrl: selectedImage.imageUrl,
+        altText: draft.imageAltText,
+      });
+      toast("Posted to LinkedIn");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "LinkedIn publish failed", "error");
+    } finally {
+      setIsPublishingToLinkedIn(false);
+    }
+  }
+
   return (
     <div className="min-h-[calc(100vh-65px)] bg-[#0b1220] px-4 py-10 md:px-6">
       <div className="mx-auto max-w-4xl space-y-8">
@@ -893,6 +980,56 @@ function GeneratePage({
               </div>
             </div>
 
+            <div className="space-y-4 rounded-xl border border-slate-700 bg-slate-950 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">LinkedIn Page</h3>
+                  <p className="mt-1 text-xs text-slate-600">Post this draft with one generated image.</p>
+                </div>
+                <span className={draftBrand?.linkedinAccessToken ? "text-xs text-emerald-400" : "text-xs text-slate-500"}>
+                  {draftBrand?.linkedinAccessToken ? "Connected" : "Not connected"}
+                </span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-[220px_1fr]">
+                <FieldRow label="Organization ID">
+                  <input
+                    value={draftLinkedInOrgId}
+                    onChange={(event) => setDraftLinkedInOrgId(event.target.value.replace(/\D/g, ""))}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    placeholder="123456"
+                  />
+                </FieldRow>
+                <FieldRow label="LinkedIn Text">
+                  <textarea
+                    value={draftLinkedInText}
+                    onChange={(event) => setDraftLinkedInText(event.target.value)}
+                    rows={4}
+                    className="w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm leading-6 text-slate-200 outline-none transition focus:border-blue-500"
+                  />
+                </FieldRow>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {draftImages
+                  .filter((image) => image.imageUrl)
+                  .map((image) => (
+                    <button
+                      key={image.id}
+                      onClick={() => setDraftLinkedInImageId(image.id)}
+                      className={`overflow-hidden rounded-xl border text-left transition ${
+                        draftLinkedInImageId === image.id
+                          ? "border-blue-400 bg-blue-500/10"
+                          : "border-slate-800 bg-slate-900 hover:border-slate-600"
+                      }`}
+                    >
+                      <div className="aspect-video bg-slate-900">
+                        <img src={image.imageUrl ?? ""} alt="" className="h-full w-full object-cover" />
+                      </div>
+                      <div className="px-3 py-2 text-xs font-medium text-slate-300">{image.angleLabel}</div>
+                    </button>
+                  ))}
+              </div>
+            </div>
+
             <div className="flex flex-col gap-3 pt-1 sm:flex-row">
               <button
                 onClick={sendDraftToN8n}
@@ -905,6 +1042,24 @@ function GeneratePage({
                   <Icon name="upload" />
                 )}
                 {isSendingToN8n ? "Sending to n8n" : "Add to n8n"}
+              </button>
+              <button
+                onClick={publishDraftToLinkedIn}
+                disabled={
+                  isPublishingToLinkedIn ||
+                  !draftBrand?.linkedinAccessToken ||
+                  !draftLinkedInOrgId.trim() ||
+                  !draftLinkedInImageId ||
+                  !draftLinkedInText.trim()
+                }
+                className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isPublishingToLinkedIn ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                ) : (
+                  <Icon name="linkedin" />
+                )}
+                {isPublishingToLinkedIn ? "Posting to LinkedIn" : "Post to LinkedIn"}
               </button>
               <button
                 onClick={() => {
@@ -1046,6 +1201,7 @@ function BrandsPage({
             <BrandCard
               key={brand.id}
               brand={brand}
+              userId={data.user?.id ?? ""}
               onEdit={(nextBrand) => {
                 setEditing(nextBrand);
                 setModalOpen(true);
@@ -1083,10 +1239,12 @@ function BrandsPage({
 
 function BrandCard({
   brand,
+  userId,
   onEdit,
   onDelete,
 }: {
   brand: Brand;
+  userId: string;
   onEdit: (brand: Brand) => void;
   onDelete: (id: string) => void;
 }) {
@@ -1107,6 +1265,17 @@ function BrandCard({
           </p>
         </div>
         <div className="ml-auto flex gap-2">
+          <a
+            href={`/api/linkedin/oauth/start?brandId=${encodeURIComponent(brand.id)}&userId=${encodeURIComponent(userId)}`}
+            className={`rounded-lg border p-2 transition ${
+              brand.linkedinAccessToken
+                ? "border-emerald-700/50 bg-emerald-900/25 text-emerald-300 hover:bg-emerald-900/40"
+                : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}
+            title={brand.linkedinAccessToken ? "Reconnect LinkedIn" : "Connect LinkedIn"}
+          >
+            <Icon name="linkedin" />
+          </a>
           <button
             onClick={() => onEdit(brand)}
             className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 transition hover:bg-slate-700"
@@ -1129,6 +1298,7 @@ function BrandCard({
         <StatusLine active={!!brand.styleImageUrl} label={`Style ref ${brand.styleImageUrl ? "uploaded" : "missing"}`} />
         <StatusLine active={!!brand.masterPrompt} label={`Master prompt ${brand.masterPrompt ? "set" : "empty"}`} />
         <StatusLine active={!!brand.cmsUrl} label={`CMS ${brand.cmsUrl ? "configured" : "not set"}`} />
+        <StatusLine active={!!brand.linkedinAccessToken} label={`LinkedIn ${brand.linkedinAccessToken ? "connected" : "not connected"}`} />
       </div>
     </div>
   );
@@ -1166,6 +1336,9 @@ function BrandModal({
     cmsEmail: brand?.cmsEmail ?? "",
     cmsPassword: brand?.cmsPassword ?? "",
     cmsCollectionSlug: brand?.cmsCollectionSlug ?? "posts",
+    linkedinOrganizationId: brand?.linkedinOrganizationId ?? "",
+    linkedinAccessToken: brand?.linkedinAccessToken ?? null,
+    linkedinAccessTokenExpiresAt: brand?.linkedinAccessTokenExpiresAt ?? null,
     logoUrl: brand?.logoUrl ?? null,
     styleImageUrl: brand?.styleImageUrl ?? null,
   });
@@ -1196,6 +1369,9 @@ function BrandModal({
         cmsEmail: form.cmsEmail || null,
         cmsPassword: form.cmsPassword || null,
         cmsCollectionSlug: form.cmsCollectionSlug || "posts",
+        linkedinOrganizationId: form.linkedinOrganizationId || null,
+        linkedinAccessToken: form.linkedinAccessToken,
+        linkedinAccessTokenExpiresAt: form.linkedinAccessTokenExpiresAt,
         logoUrl: form.logoUrl,
         styleImageUrl: form.styleImageUrl,
         createdAt: brand?.createdAt ?? timestamp,
@@ -1318,6 +1494,27 @@ function BrandModal({
             </FieldRow>
           </div>
 
+          <div className="space-y-4 rounded-xl border border-slate-700/50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-white">LinkedIn Settings</span>
+                <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">optional</span>
+              </div>
+              {form.linkedinAccessToken ? <span className="text-xs font-medium text-emerald-400">OAuth connected</span> : null}
+            </div>
+            <FieldRow label="Organization ID" hint="numeric LinkedIn company page ID">
+              <input
+                value={form.linkedinOrganizationId}
+                onChange={(event) => setForm((current) => ({ ...current, linkedinOrganizationId: event.target.value.replace(/\D/g, "") }))}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-blue-500"
+                placeholder="123456"
+              />
+            </FieldRow>
+            <p className="text-xs leading-5 text-slate-500">
+              Save this brand, then use the brand card to connect LinkedIn OAuth for posting to the organization page.
+            </p>
+          </div>
+
           <div className="flex gap-3 pt-2">
             <button
               onClick={saveBrand}
@@ -1381,6 +1578,9 @@ function HistoryPage({
   const [filterBrand, setFilterBrand] = useState("");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [sendingN8nRunId, setSendingN8nRunId] = useState<string | null>(null);
+  const [publishingLinkedInRunId, setPublishingLinkedInRunId] = useState<string | null>(null);
+  const [linkedinText, setLinkedinText] = useState("");
+  const [linkedinImageId, setLinkedinImageId] = useState("");
   const selectedRun = data.runs.find((run) => run.id === selectedRunId) ?? null;
   const selectedBrand = selectedRun ? data.brands.find((brand) => brand.id === selectedRun.brandId) ?? null : null;
   const selectedImages = selectedRun ? data.images.filter((image) => image.runId === selectedRun.id) : [];
@@ -1388,6 +1588,20 @@ function HistoryPage({
     () => data.runs.filter((run) => !filterBrand || run.brandId === filterBrand),
     [data.runs, filterBrand],
   );
+
+  useEffect(() => {
+    if (!selectedRun) {
+      setLinkedinText("");
+      setLinkedinImageId("");
+      return;
+    }
+
+    const firstImage = selectedImages
+      .sort((a, b) => a.angleId - b.angleId)
+      .find((image) => image.imageUrl);
+    setLinkedinText(defaultLinkedInText(selectedRun));
+    setLinkedinImageId(firstImage?.id ?? "");
+  }, [selectedRunId]);
 
   function approveRun(runId: string) {
     setData((current) => ({
@@ -1457,6 +1671,45 @@ function HistoryPage({
       toast(error instanceof Error ? error.message : "Could not send to n8n", "error");
     } finally {
       setSendingN8nRunId(null);
+    }
+  }
+
+  async function publishRunToLinkedIn(runId: string) {
+    const run = data.runs.find((item) => item.id === runId);
+    const brand = run ? data.brands.find((item) => item.id === run.brandId) : null;
+    const image = data.images.find((item) => item.id === linkedinImageId);
+
+    if (!run || !brand) {
+      toast("Run or brand not found", "error");
+      return;
+    }
+    if (!brand.linkedinOrganizationId || !brand.linkedinAccessToken) {
+      toast("Connect LinkedIn and add the organization ID in Brands first", "error");
+      return;
+    }
+    if (!image?.imageUrl) {
+      toast("Select an image for LinkedIn", "error");
+      return;
+    }
+    if (!linkedinText.trim()) {
+      toast("Add LinkedIn post text", "error");
+      return;
+    }
+
+    setPublishingLinkedInRunId(runId);
+    try {
+      await postJson<{ postId: string }>("/api/publish-linkedin", {
+        accessToken: brand.linkedinAccessToken,
+        organizationId: brand.linkedinOrganizationId,
+        commentary: linkedinText,
+        imageUrl: image.imageUrl,
+        altText: run.imageAltText,
+      });
+      toast("Posted to LinkedIn");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "LinkedIn publish failed", "error");
+    } finally {
+      setPublishingLinkedInRunId(null);
     }
   }
 
@@ -1563,6 +1816,60 @@ function HistoryPage({
                 </div>
               </div>
 
+              <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">LinkedIn Post</h3>
+                  <span className={selectedBrand?.linkedinAccessToken ? "text-xs text-emerald-400" : "text-xs text-slate-500"}>
+                    {selectedBrand?.linkedinAccessToken ? "Connected" : "Not connected"}
+                  </span>
+                </div>
+                <textarea
+                  value={linkedinText}
+                  onChange={(event) => setLinkedinText(event.target.value)}
+                  rows={5}
+                  className="w-full resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm leading-6 text-slate-200 outline-none transition focus:border-blue-500"
+                />
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {selectedImages
+                    .filter((image) => image.imageUrl)
+                    .sort((a, b) => a.angleId - b.angleId)
+                    .map((image) => (
+                      <button
+                        key={image.id}
+                        onClick={() => setLinkedinImageId(image.id)}
+                        className={`overflow-hidden rounded-xl border text-left transition ${
+                          linkedinImageId === image.id
+                            ? "border-blue-400 bg-blue-500/10"
+                            : "border-slate-800 bg-slate-900 hover:border-slate-600"
+                        }`}
+                      >
+                        <div className="aspect-video bg-slate-900">
+                          <img src={image.imageUrl ?? ""} alt="" className="h-full w-full object-cover" />
+                        </div>
+                        <div className="px-3 py-2 text-xs font-medium text-slate-300">{image.angleLabel}</div>
+                      </button>
+                    ))}
+                </div>
+                <button
+                  onClick={() => publishRunToLinkedIn(selectedRun.id)}
+                  disabled={
+                    publishingLinkedInRunId === selectedRun.id ||
+                    !selectedBrand?.linkedinAccessToken ||
+                    !selectedBrand?.linkedinOrganizationId ||
+                    !linkedinImageId ||
+                    !linkedinText.trim()
+                  }
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {publishingLinkedInRunId === selectedRun.id ? (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  ) : (
+                    <Icon name="linkedin" />
+                  )}
+                  {publishingLinkedInRunId === selectedRun.id ? "Posting to LinkedIn" : "Post to LinkedIn"}
+                </button>
+              </div>
+
               <div className="flex flex-col gap-3 sm:flex-row">
                 <button
                   onClick={() => sendRunToN8n(selectedRun.id)}
@@ -1608,6 +1915,11 @@ function formatDate(date: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function defaultLinkedInText(run: ContentRun) {
+  const description = run.metaDescription || run.ogDescription;
+  return [run.articleTitle, description, run.canonicalUrl].filter(Boolean).join("\n\n");
 }
 
 async function postJson<T>(url: string, payload: unknown, timeoutMs = 240000): Promise<T> {

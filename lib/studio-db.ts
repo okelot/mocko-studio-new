@@ -115,6 +115,9 @@ export async function upsertBrand(userId: string, brand: Brand) {
         cms_email: brand.cmsEmail || null,
         cms_password: brand.cmsPassword || null,
         cms_collection_slug: brand.cmsCollectionSlug || "posts",
+        linkedin_organization_id: brand.linkedinOrganizationId || null,
+        linkedin_access_token: brand.linkedinAccessToken || null,
+        linkedin_access_token_expires_at: brand.linkedinAccessTokenExpiresAt || null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "id" },
@@ -149,6 +152,29 @@ export async function deleteBrandFromDb(userId: string, brandId: string) {
 
   const { error } = await supabase.from("brands").delete().eq("id", brandId).eq("user_id", userId);
   if (error) throw new Error(`Could not delete brand: ${error.message}`);
+}
+
+export async function updateBrandLinkedInOAuth(params: {
+  userId: string;
+  brandId: string;
+  accessToken: string;
+  expiresAt: string | null;
+}) {
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("brands")
+    .update({
+      linkedin_access_token: params.accessToken,
+      linkedin_access_token_expires_at: params.expiresAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.brandId)
+    .eq("user_id", params.userId)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(`Could not save LinkedIn connection: ${error.message}`);
+  return toBrand(data);
 }
 
 export async function createRunInDb(params: {
@@ -260,6 +286,9 @@ export function toBrand(row: any): Brand {
     cmsEmail: row.cms_email,
     cmsPassword: row.cms_password,
     cmsCollectionSlug: row.cms_collection_slug || "posts",
+    linkedinOrganizationId: row.linkedin_organization_id || null,
+    linkedinAccessToken: row.linkedin_access_token || null,
+    linkedinAccessTokenExpiresAt: row.linkedin_access_token_expires_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at || row.created_at,
   };
