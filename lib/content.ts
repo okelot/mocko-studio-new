@@ -1,6 +1,6 @@
 import OpenAI, { toFile } from "openai";
 import { createGenerationLogger, summarizeForLog, type GenerationLogger } from "./generation-logger";
-import { ARTICLE_MODELS, type ArticleModelId, type Brand } from "./types";
+import { ARTICLE_MODELS, type ArticleModelId, type Brand, type PayloadCategory } from "./types";
 
 export interface ArticleResult {
   title: string;
@@ -352,15 +352,19 @@ export async function publishToPayloadCMS(payload: {
   cmsEmail: string;
   cmsPassword: string;
   collectionSlug: string;
+  mainCategoryId?: string | number | null;
   article: {
     title: string;
     content: string;
     metaDescription: string;
     keyword: string;
+    slug?: string;
   };
   imageUrls: string[];
 }) {
-  const loginRes = await fetch(`${payload.cmsUrl.replace(/\/$/, "")}/api/users/login`, {
+  const cmsBaseUrl = normalizePayloadCmsUrl(payload.cmsUrl);
+  const mainCategoryId = normalizePayloadRelationshipId(payload.mainCategoryId);
+  const loginRes = await fetch(`${cmsBaseUrl}/api/users/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email: payload.cmsEmail, password: payload.cmsPassword }),
@@ -371,15 +375,27 @@ export async function publishToPayloadCMS(payload: {
   }
 
   const { token } = (await loginRes.json()) as { token: string };
-  const postRes = await fetch(`${payload.cmsUrl.replace(/\/$/, "")}/api/${payload.collectionSlug}`, {
+  const thumbnailId = payload.imageUrls[0]
+    ? await uploadPayloadMedia({
+        cmsBaseUrl,
+        token,
+        imageUrl: payload.imageUrls[0],
+        alt: payload.article.title,
+      })
+    : null;
+  const postRes = await fetch(`${cmsBaseUrl}/api/${payload.collectionSlug}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `JWT ${token}` },
     body: JSON.stringify({
       title: payload.article.title,
-      content: payload.article.content,
-      meta: { description: payload.article.metaDescription },
-      featuredImage: payload.imageUrls[0] || null,
-      status: "draft",
+      slug: payload.article.slug,
+      description: payload.article.metaDescription,
+      body: markdownToLexical(payload.article.content),
+      body_html: markdownToHtml(payload.article.content),
+      main_category: mainCategoryId,
+      categories: mainCategoryId ? [mainCategoryId] : undefined,
+      thumbnail: thumbnailId,
+      published: true,
     }),
   });
 
@@ -389,4 +405,199 @@ export async function publishToPayloadCMS(payload: {
 
   const postData = (await postRes.json()) as { doc?: { id: string }; id?: string };
   return postData.doc?.id || postData.id || "";
+}
+
+async function uploadPayloadMedia(params: {
+  cmsBaseUrl: string;
+  token: string;
+  imageUrl: string;
+  alt: string;
+}) {
+  const imageResponse = await fetch(params.imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Could not fetch image for Payload upload: ${imageResponse.statusText}`);
+  }
+
+  const contentType = imageResponse.headers.get("content-type") || "image/png";
+  const extension = contentType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  const filename = `${slugifyFilename(params.alt)}.${extension}`;
+  const form = new FormData();
+  form.append("alt", params.alt);
+  form.append(
+    "file",
+    new Blob([await imageResponse.arrayBuffer()], { type: contentType }),
+    filename,
+  );
+
+  const uploadResponse = await fetch(`${params.cmsBaseUrl}/api/media`, {
+    method: "POST",
+    headers: { Authorization: `JWT ${params.token}` },
+    body: form,
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Payload media upload failed: ${await uploadResponse.text()}`);
+  }
+
+  const uploaded = (await uploadResponse.json()) as { doc?: { id: string | number }; id?: string | number };
+  return uploaded.doc?.id || uploaded.id || null;
+}
+
+export async function listPayloadCategories(payload: {
+  cmsUrl: string;
+  cmsEmail: string;
+  cmsPassword: string;
+}) {
+  const cmsBaseUrl = normalizePayloadCmsUrl(payload.cmsUrl);
+  const loginRes = await fetch(`${cmsBaseUrl}/api/users/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: payload.cmsEmail, password: payload.cmsPassword }),
+  });
+
+  if (!loginRes.ok) {
+    throw new Error(`Payload CMS login failed: ${await loginRes.text()}`);
+  }
+
+  const { token } = (await loginRes.json()) as { token: string };
+  const categoriesRes = await fetch(`${cmsBaseUrl}/api/categories?limit=100&sort=name`, {
+    headers: { Authorization: `JWT ${token}` },
+  });
+
+  if (!categoriesRes.ok) {
+    throw new Error(`Could not load Payload categories: ${await categoriesRes.text()}`);
+  }
+
+  const data = (await categoriesRes.json()) as { docs?: Array<{ id: string | number; name?: string; title?: string; slug?: string }> };
+  return (data.docs || [])
+    .map((category): PayloadCategory | null => {
+      const name = category.name || category.title;
+      if (!name || !category.slug) {
+        return null;
+      }
+      return { id: category.id, name, slug: category.slug };
+    })
+    .filter((category): category is PayloadCategory => Boolean(category));
+}
+
+function normalizePayloadCmsUrl(url: string) {
+  return url.replace(/\/admin\/?$/, "").replace(/\/$/, "");
+}
+
+function normalizePayloadRelationshipId(id: string | number | null | undefined) {
+  if (id === null || id === undefined || id === "") {
+    return undefined;
+  }
+
+  if (typeof id === "number") {
+    return id;
+  }
+
+  const numericId = Number(id);
+  return Number.isInteger(numericId) ? numericId : id;
+}
+
+function markdownToLexical(markdown: string) {
+  const children = markdown
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .flatMap((block) => {
+      const heading = block.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        return [
+          lexicalElement("heading", [lexicalText(stripMarkdownInline(heading[2]))], {
+            tag: `h${heading[1].length}`,
+          }),
+        ];
+      }
+
+      if (/^[-*]\s+/m.test(block)) {
+        return block
+          .split(/\n/)
+          .map((line) => line.replace(/^[-*]\s+/, "").trim())
+          .filter(Boolean)
+          .map((line) => lexicalElement("paragraph", [lexicalText(stripMarkdownInline(line))]));
+      }
+
+      return [lexicalElement("paragraph", [lexicalText(stripMarkdownInline(block.replace(/\n/g, " ")))])];
+    });
+
+  return {
+    root: {
+      type: "root",
+      format: "",
+      indent: 0,
+      version: 1,
+      children: children.length ? children : [lexicalElement("paragraph", [lexicalText("")])],
+      direction: null,
+    },
+  };
+}
+
+function lexicalElement(type: string, children: unknown[], extra: Record<string, unknown> = {}) {
+  return {
+    type,
+    format: "",
+    indent: 0,
+    version: 1,
+    children,
+    direction: null,
+    ...extra,
+  };
+}
+
+function lexicalText(text: string) {
+  return {
+    mode: "normal",
+    text,
+    type: "text",
+    style: "",
+    detail: 0,
+    format: 0,
+    version: 1,
+  };
+}
+
+function markdownToHtml(markdown: string) {
+  return markdown
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const heading = block.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        const level = heading[1].length;
+        return `<h${level}>${escapeHtml(stripMarkdownInline(heading[2]))}</h${level}>`;
+      }
+      return `<p>${escapeHtml(stripMarkdownInline(block.replace(/\n/g, " ")))}</p>`;
+    })
+    .join("");
+}
+
+function stripMarkdownInline(value: string) {
+  return value
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
+function slugifyFilename(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .slice(0, 80) || "mocko-article"
+  );
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

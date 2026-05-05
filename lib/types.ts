@@ -73,6 +73,12 @@ export interface GeneratedImage {
   createdAt: string;
 }
 
+export interface PayloadCategory {
+  id: string | number;
+  name: string;
+  slug: string;
+}
+
 export interface StudioData {
   user: User | null;
   activeRunId: string | null;

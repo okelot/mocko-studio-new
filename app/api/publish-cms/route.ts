@@ -3,13 +3,21 @@ import { publishToPayloadCMS } from "@/lib/content";
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as Parameters<typeof publishToPayloadCMS>[0];
+    const body = (await request.json()) as Partial<Parameters<typeof publishToPayloadCMS>[0]>;
+    const payload = {
+      ...body,
+      cmsUrl: body.cmsUrl || process.env.MOCKO_PAYLOAD_CMS_URL || "",
+      cmsEmail: body.cmsEmail || process.env.MOCKO_PAYLOAD_CMS_EMAIL || "",
+      cmsPassword: body.cmsPassword || process.env.MOCKO_PAYLOAD_CMS_PASSWORD || "",
+      collectionSlug: body.collectionSlug || process.env.MOCKO_PAYLOAD_CMS_COLLECTION_SLUG || "posts",
+      mainCategoryId: body.mainCategoryId || process.env.MOCKO_PAYLOAD_CMS_MAIN_CATEGORY_ID || "",
+    } as Parameters<typeof publishToPayloadCMS>[0];
 
-    if (!body.cmsUrl || !body.cmsEmail || !body.cmsPassword) {
-      return NextResponse.json({ error: "CMS credentials are not configured for this brand." }, { status: 400 });
+    if (!payload.cmsUrl || !payload.cmsEmail || !payload.cmsPassword) {
+      return NextResponse.json({ error: "Payload CMS credentials are not configured." }, { status: 400 });
     }
 
-    const cmsPostId = await publishToPayloadCMS(body);
+    const cmsPostId = await publishToPayloadCMS(payload);
     return NextResponse.json({ cmsPostId });
   } catch (error) {
     return NextResponse.json(

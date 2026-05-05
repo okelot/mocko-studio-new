@@ -17,6 +17,7 @@ import {
   type ContentRun,
   type GeneratedImage,
   type Page,
+  type PayloadCategory,
   type StudioData,
 } from "@/lib/types";
 
@@ -35,6 +36,23 @@ const articleGenerationAutofill = {
   primaryKeyword: "pte respond to a situation",
   articleModelId: "openai:gpt-5.4" as ArticleModelId,
 };
+
+const fallbackPayloadCategories: PayloadCategory[] = [
+  { id: 16, name: "CELPIP", slug: "celpip" },
+  { id: 15, name: "TCF", slug: "tcf" },
+  { id: 14, name: "PTE", slug: "pte" },
+  { id: 13, name: "Mocko Talks", slug: "mocko-talks" },
+  { id: 12, name: "Global Opportunities", slug: "global-opportunities" },
+  { id: 9, name: "Writing", slug: "writing" },
+  { id: 8, name: "TEF Exam", slug: "tef-exam" },
+  { id: 7, name: "Schedule", slug: "schedule" },
+  { id: 6, name: "Listening", slug: "listening" },
+  { id: 5, name: "Articles", slug: "articles" },
+  { id: 4, name: "Learning Resources", slug: "learning-resources" },
+  { id: 3, name: "TEF", slug: "tef" },
+  { id: 2, name: "Reading", slug: "reading" },
+  { id: 1, name: "French", slug: "french" },
+];
 
 function AppShell() {
   const { toast } = useToast();
@@ -459,6 +477,11 @@ function GeneratePage({
   const [tweakPrompts, setTweakPrompts] = useState<Record<number, string>>({});
   const [isEdited, setIsEdited] = useState(false);
   const [isSendingToN8n, setIsSendingToN8n] = useState(false);
+  const [isPublishingToCms, setIsPublishingToCms] = useState(false);
+  const [payloadCategories, setPayloadCategories] = useState<PayloadCategory[]>(fallbackPayloadCategories);
+  const [payloadCategoryId, setPayloadCategoryId] = useState(String(fallbackPayloadCategories[2]?.id ?? ""));
+  const [isLoadingPayloadCategories, setIsLoadingPayloadCategories] = useState(false);
+  const [payloadCategoriesSource, setPayloadCategoriesSource] = useState<"payload" | "fallback">("fallback");
   const [isPublishingToLinkedIn, setIsPublishingToLinkedIn] = useState(false);
   const [draftLinkedInOrgId, setDraftLinkedInOrgId] = useState("");
   const [draftLinkedInText, setDraftLinkedInText] = useState("");
@@ -477,6 +500,40 @@ function GeneratePage({
       setBrandId(data.brands[0].id);
     }
   }, [brandId, data.brands]);
+
+  useEffect(() => {
+    setIsLoadingPayloadCategories(true);
+    void fetch("/api/payload-categories")
+      .then(async (response) => {
+        const result = (await response.json()) as { categories?: PayloadCategory[]; error?: string };
+        if (!response.ok) {
+          throw new Error(result.error || "Could not load Payload categories");
+        }
+        if (!result.categories?.length) {
+          throw new Error("Payload returned no categories");
+        }
+
+        setPayloadCategories(result.categories);
+        setPayloadCategoryId((current) => {
+          if (result.categories?.some((category) => String(category.id) === current)) {
+            return current;
+          }
+          const pte = result.categories?.find((category) => category.slug === "pte");
+          return String(pte?.id ?? result.categories?.[0]?.id ?? "");
+        });
+        setPayloadCategoriesSource("payload");
+      })
+      .catch(() => {
+        setPayloadCategories(fallbackPayloadCategories);
+        setPayloadCategoryId((current) =>
+          fallbackPayloadCategories.some((category) => String(category.id) === current)
+            ? current
+            : String(fallbackPayloadCategories[2]?.id ?? fallbackPayloadCategories[0]?.id ?? ""),
+        );
+        setPayloadCategoriesSource("fallback");
+      })
+      .finally(() => setIsLoadingPayloadCategories(false));
+  }, []);
 
   useEffect(() => {
     if (!draft) {
@@ -722,6 +779,41 @@ function GeneratePage({
     }
   }
 
+  async function publishDraftToCms() {
+    if (!draft) {
+      return;
+    }
+    if (!draft.articleMarkdown.trim()) {
+      toast("Add article content before publishing", "error");
+      return;
+    }
+
+    setIsPublishingToCms(true);
+    try {
+      await postJson<{ cmsPostId: string }>("/api/publish-cms", {
+        mainCategoryId: payloadCategoryId,
+        article: {
+          title: draft.seoTitle || draft.articleTitle,
+          content: draft.articleMarkdown,
+          metaDescription: draft.metaDescription,
+          keyword: draft.primaryKeyword,
+          slug: draft.urlSlug,
+        },
+        imageUrls: draftImages.map((image) => image.imageUrl).filter(Boolean),
+      });
+
+      setData((current) => ({
+        ...current,
+        runs: current.runs.map((item) => (item.id === draft.id ? { ...item, stage: "published" } : item)),
+      }));
+      toast("Published to Payload CMS");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Payload CMS publish failed", "error");
+    } finally {
+      setIsPublishingToCms(false);
+    }
+  }
+
   async function publishDraftToLinkedIn() {
     if (!draft || !draftBrand) {
       toast("Run or brand not found", "error");
@@ -948,6 +1040,35 @@ function GeneratePage({
               <p className="line-clamp-2 text-sm leading-snug text-slate-400">{draft.metaDescription}</p>
             </div>
 
+            <div className="rounded-xl border border-slate-700 bg-slate-950 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">Payload CMS</h3>
+                  <p className="mt-1 text-xs text-slate-600">Choose the main category used when publishing.</p>
+                </div>
+                <span className="text-xs text-slate-500">
+                  {isLoadingPayloadCategories
+                    ? "Loading categories"
+                    : payloadCategoriesSource === "payload"
+                      ? "Loaded from Payload"
+                      : "Manual fallback"}
+                </span>
+              </div>
+              <FieldRow label="Main Category">
+                <select
+                  value={payloadCategoryId}
+                  onChange={(event) => setPayloadCategoryId(event.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                >
+                  {payloadCategories.map((category) => (
+                    <option key={category.id} value={String(category.id)}>
+                      {category.name} / {category.slug}
+                    </option>
+                  ))}
+                </select>
+              </FieldRow>
+            </div>
+
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1042,6 +1163,18 @@ function GeneratePage({
                   <Icon name="upload" />
                 )}
                 {isSendingToN8n ? "Sending to n8n" : "Add to n8n"}
+              </button>
+              <button
+                onClick={publishDraftToCms}
+                disabled={isPublishingToCms || !draft.articleMarkdown.trim() || !payloadCategoryId}
+                className="flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isPublishingToCms ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                ) : (
+                  <Icon name="upload" />
+                )}
+                {isPublishingToCms ? "Publishing to CMS" : "Publish to CMS"}
               </button>
               <button
                 onClick={publishDraftToLinkedIn}
