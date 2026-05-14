@@ -81,9 +81,9 @@ export async function POST(request: Request) {
       title: summarizeForLog(article.title),
       markdownChars: article.markdown.length,
     });
-    logger.info("run save started", { userId: body.userId, brandId: body.brandId });
+    logger.info("run save started", { userId: effectiveUserId, brandId: body.brandId });
     const run = await createRunInDb({
-      userId: body.userId,
+      userId: effectiveUserId,
       brandId: body.brandId,
       topic: body.topic,
       primaryKeyword: body.primaryKeyword,
