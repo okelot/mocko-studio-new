@@ -579,6 +579,7 @@ function GeneratePage({
           primaryKeyword: primaryKeyword.trim(),
           articleModelId,
           userId: data.user?.id,
+          user: data.user,
           brandId,
         },
       );
@@ -662,8 +663,7 @@ function GeneratePage({
           articleTitle: run.articleTitle,
           angleId,
           runId: run.id,
-          userId: data.user?.id,
-          brandId: selectedBrand.id,
+          brand: selectedBrand,
         });
 
         const image: GeneratedImage = result.image as GeneratedImage;
@@ -732,8 +732,7 @@ function GeneratePage({
         articleTitle: draft.articleTitle,
         angleId,
         runId: draft.id,
-        userId: data.user?.id,
-        brandId: selectedBrand.id,
+        brand: selectedBrand,
         userFeedback: feedback,
       });
 

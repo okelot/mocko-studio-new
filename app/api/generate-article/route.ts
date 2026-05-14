@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { ProviderConfigError, generateArticle } from "@/lib/content";
 import { createGenerationLogger, summarizeForLog } from "@/lib/generation-logger";
-import { createRunInDb, toBrand } from "@/lib/studio-db";
+import { createRunInDb, ensurePublicUser, toBrand } from "@/lib/studio-db";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
-import { ARTICLE_MODELS, type ArticleModelId } from "@/lib/types";
+import { ARTICLE_MODELS, type ArticleModelId, type User } from "@/lib/types";
 
 export async function POST(request: Request) {
   const logger = createGenerationLogger("article-route");
@@ -14,6 +14,7 @@ export async function POST(request: Request) {
       primaryKeyword?: string;
       masterPrompt?: string;
       userId?: string;
+      user?: User;
       brandId?: string;
       articleModelId?: ArticleModelId;
     };
@@ -32,13 +33,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Topic, keyword, user, and brand are required." }, { status: 400 });
     }
 
+    // Resolve the effective DB user ID (may differ from auth UUID if user was
+    // previously stored under a different auth UUID but the same email).
+    let effectiveUserId = body.userId;
+    if (body.user) {
+      const dbUser = await ensurePublicUser(body.user);
+      effectiveUserId = dbUser.id;
+    }
+
     const supabase = getSupabaseServerClient();
-    logger.info("brand lookup started", { userId: body.userId, brandId: body.brandId });
+    logger.info("brand lookup started", { userId: effectiveUserId, brandId: body.brandId });
     const { data: brandRow, error: brandError } = await supabase
       .from("brands")
       .select("*")
       .eq("id", body.brandId)
-      .eq("user_id", body.userId)
+      .eq("user_id", effectiveUserId)
       .single();
 
     if (brandError || !brandRow) {
