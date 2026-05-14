@@ -1841,6 +1841,41 @@ function HistoryPage({
     }
   }
 
+  async function regenerateSingleImage(angleId: number) {
+    if (!editDraft || !data.user) return;
+    const brand = data.brands.find((b) => b.id === editDraft.brandId);
+    if (!brand) {
+      toast("Brand not found", "error");
+      return;
+    }
+
+    setGeneratingImageIds((current) => [...current, angleId]);
+    try {
+      const result = await postJson<{
+        image: { angleId: number; angleLabel: string; prompt: string; imageUrl: string };
+      }>("/api/generate-image", {
+        articleTitle: editDraft.articleTitle,
+        angleId,
+        runId: editDraft.id,
+        brand,
+        userFeedback:
+          "Generate a completely fresh, unique visual variation — different composition and style from any previous images",
+      });
+      const image = result.image as GeneratedImage;
+      setData((current) => ({
+        ...current,
+        images: [
+          image,
+          ...current.images.filter((i) => !(i.runId === editDraft.id && i.angleId === image.angleId)),
+        ],
+      }));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not regenerate image", "error");
+    } finally {
+      setGeneratingImageIds((current) => current.filter((id) => id !== angleId));
+    }
+  }
+
   async function regenerateImages() {
     if (!editDraft || !data.user) return;
     const brand = data.brands.find((b) => b.id === editDraft.brandId);
@@ -2208,25 +2243,43 @@ function HistoryPage({
                     {generatingImageIds.length > 0 ? "Generating…" : isCloningRun ? "Saving…" : "Regenerate Images"}
                   </button>
                 </div>
-                <p className="mb-3 text-xs text-slate-600">Regenerating always creates a new history entry.</p>
+                <p className="mb-3 text-xs text-slate-600">
+                  "Regenerate Images" creates a new history entry. Individual buttons regenerate in place.
+                </p>
                 <div className="grid gap-3 sm:grid-cols-3">
                   {[1, 2, 3].map((angleId) => {
                     const image = selectedImages.find((img) => img.angleId === angleId);
                     const isGenerating = generatingImageIds.includes(angleId);
+                    const isBusy = isGenerating || isCloningRun;
                     return (
-                      <div key={angleId} className="aspect-video overflow-hidden rounded-xl bg-slate-950">
-                        {isGenerating ? (
-                          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
-                            <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-                            <span className="text-xs">Generating…</span>
-                          </div>
-                        ) : image?.imageUrl ? (
-                          <img src={image.imageUrl} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-600">
-                            {image?.angleLabel ?? `Angle ${angleId}`}
-                          </div>
-                        )}
+                      <div key={angleId} className="group relative overflow-hidden rounded-xl bg-slate-950">
+                        <div className="aspect-video">
+                          {isGenerating ? (
+                            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
+                              <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                              <span className="text-xs">Generating…</span>
+                            </div>
+                          ) : image?.imageUrl ? (
+                            <img src={image.imageUrl} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-600">
+                              {image?.angleLabel ?? `Angle ${angleId}`}
+                            </div>
+                          )}
+                        </div>
+                        {/* Per-image regenerate button */}
+                        <button
+                          onClick={() => regenerateSingleImage(angleId)}
+                          disabled={isBusy}
+                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {isGenerating ? (
+                            <span className="h-3 w-3 animate-spin rounded-full border border-white border-t-transparent" />
+                          ) : (
+                            <Icon name="spark" className="h-3 w-3" />
+                          )}
+                          Regenerate
+                        </button>
                       </div>
                     );
                   })}
