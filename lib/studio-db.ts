@@ -213,6 +213,33 @@ export async function createRunInDb(params: {
   return toRun(data);
 }
 
+export async function cloneRunInDb(params: { userId: string; run: ContentRun }) {
+  const supabase = getSupabaseServerClient();
+  const { run } = params;
+  const { data, error } = await supabase
+    .from("content_runs")
+    .insert({
+      id: crypto.randomUUID(),
+      user_id: params.userId,
+      brand_id: run.brandId,
+      topic: run.topic,
+      primary_keyword: run.primaryKeyword,
+      article_title: run.articleTitle,
+      article_markdown: run.articleMarkdown,
+      meta_description: run.metaDescription,
+      url_slug: run.urlSlug,
+      seo_title: run.seoTitle,
+      image_summary: run.imageAltText,
+      stage: "article_done",
+      approved: false,
+    })
+    .select("*")
+    .single();
+
+  if (error) throw new Error(`Could not clone content run: ${error.message}`);
+  return toRun(data);
+}
+
 export async function updateRunInDb(runId: string, patch: Partial<ContentRun>) {
   const supabase = getSupabaseServerClient();
   const updates: Record<string, unknown> = {

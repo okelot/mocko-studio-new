@@ -57,7 +57,13 @@ const fallbackPayloadCategories: PayloadCategory[] = [
 function AppShell() {
   const { toast } = useToast();
   const [data, setData] = useState<StudioData>(createDefaultData);
-  const [page, setPage] = useState<Page>("generate");
+  const [page, setPage] = useState<Page>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("runId")) return "history";
+    }
+    return "generate";
+  });
   const [hydrated, setHydrated] = useState(false);
   const loadedDbUserRef = useRef<string | null>(null);
 
@@ -1709,14 +1715,29 @@ function HistoryPage({
 }) {
   const { toast } = useToast();
   const [filterBrand, setFilterBrand] = useState("");
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return new URLSearchParams(window.location.search).get("runId");
+    }
+    return null;
+  });
+  const [editDraft, setEditDraft] = useState<ContentRun | null>(null);
+  const [hasEdits, setHasEdits] = useState(false);
+  const [isCloningRun, setIsCloningRun] = useState(false);
+  const [generatingImageIds, setGeneratingImageIds] = useState<number[]>([]);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [sendingN8nRunId, setSendingN8nRunId] = useState<string | null>(null);
   const [publishingLinkedInRunId, setPublishingLinkedInRunId] = useState<string | null>(null);
   const [linkedinText, setLinkedinText] = useState("");
   const [linkedinImageId, setLinkedinImageId] = useState("");
+
   const selectedRun = data.runs.find((run) => run.id === selectedRunId) ?? null;
-  const selectedBrand = selectedRun ? data.brands.find((brand) => brand.id === selectedRun.brandId) ?? null : null;
-  const selectedImages = selectedRun ? data.images.filter((image) => image.runId === selectedRun.id) : [];
+  const selectedBrand = selectedRun
+    ? data.brands.find((brand) => brand.id === selectedRun.brandId) ?? null
+    : null;
+  const selectedImages = selectedRun
+    ? data.images.filter((image) => image.runId === selectedRun.id)
+    : [];
   const runs = useMemo(
     () => data.runs.filter((run) => !filterBrand || run.brandId === filterBrand),
     [data.runs, filterBrand],
@@ -1724,17 +1745,141 @@ function HistoryPage({
 
   useEffect(() => {
     if (!selectedRun) {
+      setEditDraft(null);
+      setHasEdits(false);
       setLinkedinText("");
       setLinkedinImageId("");
       return;
     }
-
-    const firstImage = selectedImages
+    setEditDraft({ ...selectedRun });
+    setHasEdits(false);
+    const firstImage = [...selectedImages]
       .sort((a, b) => a.angleId - b.angleId)
       .find((image) => image.imageUrl);
     setLinkedinText(defaultLinkedInText(selectedRun));
     setLinkedinImageId(firstImage?.id ?? "");
-  }, [selectedRunId]);
+  }, [selectedRunId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function selectRun(runId: string) {
+    setSelectedRunId(runId);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("runId", runId);
+      window.history.pushState({}, "", url.toString());
+    }
+  }
+
+  function closeModal() {
+    setSelectedRunId(null);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("runId");
+      window.history.pushState({}, "", url.toString());
+    }
+  }
+
+  function updateEditDraft<K extends keyof ContentRun>(key: K, value: ContentRun[K]) {
+    setEditDraft((current) => (current ? { ...current, [key]: value } : null));
+    setHasEdits(true);
+  }
+
+  function copyLink() {
+    if (!selectedRunId || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("runId", selectedRunId);
+    void navigator.clipboard.writeText(url.toString());
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }
+
+  async function cloneFromDraft(): Promise<ContentRun> {
+    if (!editDraft || !data.user) throw new Error("No draft or user");
+    const result = await postJson<{ run: ContentRun }>("/api/runs/clone", {
+      user: data.user,
+      run: editDraft,
+    });
+    return result.run;
+  }
+
+  async function saveAsNewVersion() {
+    if (!editDraft || !data.user) return;
+    setIsCloningRun(true);
+    try {
+      const newRun = await cloneFromDraft();
+      setData((current) => ({ ...current, runs: [newRun, ...current.runs] }));
+      toast("Saved as new history entry");
+      selectRun(newRun.id);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not save new version", "error");
+    } finally {
+      setIsCloningRun(false);
+    }
+  }
+
+  async function regenerateImages() {
+    if (!editDraft || !data.user) return;
+    const brand = data.brands.find((b) => b.id === editDraft.brandId);
+    if (!brand) {
+      toast("Brand not found", "error");
+      return;
+    }
+
+    setIsCloningRun(true);
+    let newRun: ContentRun;
+    try {
+      newRun = await cloneFromDraft();
+      const withGenerating = { ...newRun, stage: "generating_images" as const };
+      setData((current) => ({ ...current, runs: [withGenerating, ...current.runs] }));
+      void postJson("/api/runs/update", { runId: newRun.id, patch: { stage: "generating_images" } }).catch(() => {});
+      selectRun(newRun.id);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not create new entry", "error");
+      return;
+    } finally {
+      setIsCloningRun(false);
+    }
+
+    setGeneratingImageIds([1, 2, 3]);
+    const results = await Promise.allSettled(
+      [1, 2, 3].map(async (angleId) => {
+        const result = await postJson<{
+          image: { angleId: number; angleLabel: string; prompt: string; imageUrl: string };
+        }>("/api/generate-image", {
+          articleTitle: newRun.articleTitle,
+          angleId,
+          runId: newRun.id,
+          brand,
+        });
+        const image = result.image as GeneratedImage;
+        setData((current) => ({
+          ...current,
+          images: [
+            image,
+            ...current.images.filter((i) => !(i.runId === newRun.id && i.angleId === image.angleId)),
+          ],
+        }));
+        setGeneratingImageIds((current) => current.filter((id) => id !== angleId));
+        return image;
+      }),
+    );
+
+    const successCount = results.filter((r) => r.status === "fulfilled").length;
+    setGeneratingImageIds([]);
+    const nextStage = successCount === 3 ? "complete" : "article_done";
+    setData((current) => ({
+      ...current,
+      runs: current.runs.map((r) => (r.id === newRun.id ? { ...r, stage: nextStage } : r)),
+    }));
+    void postJson("/api/runs/update", { runId: newRun.id, patch: { stage: nextStage } }).catch(() => {});
+    toast(
+      successCount === 3
+        ? "Images generated — new history entry created"
+        : successCount > 0
+          ? `${successCount}/3 images generated`
+          : "Image generation failed",
+      successCount === 0 ? "error" : undefined,
+    );
+  }
 
   function approveRun(runId: string) {
     setData((current) => ({
@@ -1751,12 +1896,10 @@ function HistoryPage({
       toast("Run or brand not found", "error");
       return;
     }
-
     if (!brand.cmsUrl || !brand.cmsEmail || !brand.cmsPassword) {
       toast("Configure CMS credentials in Brands before publishing", "error");
       return;
     }
-
     try {
       await postJson<{ cmsPostId: string }>("/api/publish-cms", {
         cmsUrl: brand.cmsUrl,
@@ -1775,7 +1918,6 @@ function HistoryPage({
           .map((image) => image.imageUrl)
           .filter(Boolean),
       });
-
       setData((current) => ({
         ...current,
         runs: current.runs.map((item) => (item.id === runId ? { ...item, stage: "published" } : item)),
@@ -1792,13 +1934,9 @@ function HistoryPage({
       toast("Generate images before sending to n8n", "error");
       return;
     }
-
     setSendingN8nRunId(runId);
     try {
-      await postJson("/api/generated-article-webhook", {
-        runId,
-        userId: data.user?.id,
-      });
+      await postJson("/api/generated-article-webhook", { runId, userId: data.user?.id });
       toast("Sent to n8n");
     } catch (error) {
       toast(error instanceof Error ? error.message : "Could not send to n8n", "error");
@@ -1811,7 +1949,6 @@ function HistoryPage({
     const run = data.runs.find((item) => item.id === runId);
     const brand = run ? data.brands.find((item) => item.id === run.brandId) : null;
     const image = data.images.find((item) => item.id === linkedinImageId);
-
     if (!run || !brand) {
       toast("Run or brand not found", "error");
       return;
@@ -1828,7 +1965,6 @@ function HistoryPage({
       toast("Add LinkedIn post text", "error");
       return;
     }
-
     setPublishingLinkedInRunId(runId);
     try {
       await postJson<{ postId: string }>("/api/publish-linkedin", {
@@ -1882,7 +2018,7 @@ function HistoryPage({
             return (
               <button
                 key={run.id}
-                onClick={() => setSelectedRunId(run.id)}
+                onClick={() => selectRun(run.id)}
                 className="flex w-full items-center justify-between gap-4 rounded-xl border border-slate-700/50 bg-slate-900 px-5 py-4 text-left transition hover:border-slate-600"
               >
                 <div className="min-w-0">
@@ -1903,52 +2039,184 @@ function HistoryPage({
         </div>
       )}
 
-      {selectedRun ? (
+      {selectedRun && editDraft ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
           <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-700/50 bg-[#0f1729] shadow-2xl">
-            <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-700/50 bg-[#0f1729] p-6">
-              <div className="min-w-0">
-                <h2 className="truncate text-lg font-bold text-white">{selectedRun.articleTitle}</h2>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {selectedBrand?.name ?? "Unknown brand"} • {selectedRun.primaryKeyword}
-                </p>
+
+            {/* Sticky header */}
+            <div className="sticky top-0 z-10 border-b border-slate-700/50 bg-[#0f1729] p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="mb-1 text-xs text-slate-500">
+                    {selectedBrand?.name ?? "Unknown brand"} • {selectedRun.primaryKeyword} •{" "}
+                    <span className={stages[selectedRun.stage]?.color ?? "text-slate-400"}>
+                      {stages[selectedRun.stage]?.label ?? selectedRun.stage}
+                    </span>
+                  </p>
+                  <input
+                    value={editDraft.articleTitle}
+                    onChange={(e) => updateEditDraft("articleTitle", e.target.value)}
+                    className="w-full bg-transparent text-lg font-bold text-white outline-none placeholder:text-slate-600"
+                    placeholder="Article title"
+                  />
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={copyLink}
+                    title="Copy shareable link"
+                    className="flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-700 hover:text-white"
+                  >
+                    {linkCopied ? "✓ Copied!" : "Share link"}
+                  </button>
+                  <button
+                    onClick={closeModal}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-slate-400 transition hover:bg-slate-700 hover:text-white"
+                    title="Close"
+                  >
+                    <Icon name="x" />
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() => setSelectedRunId(null)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-slate-400 transition hover:bg-slate-700 hover:text-white"
-                title="Close"
-              >
-                <Icon name="x" />
-              </button>
             </div>
 
             <div className="space-y-6 p-6">
+
+              {/* Editable article fields */}
               <div>
-                <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">Article</h3>
-                <div className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-4 font-mono text-sm leading-relaxed text-slate-400">
-                  {selectedRun.articleMarkdown}
+                <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-400">Article Fields</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FieldRow label="URL Slug">
+                    <div className="flex min-w-0 items-center">
+                      <span className="shrink-0 rounded-l-lg border border-r-0 border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-400">
+                        /blog/
+                      </span>
+                      <input
+                        value={editDraft.urlSlug}
+                        onChange={(e) => {
+                          const next = slugify(e.target.value);
+                          updateEditDraft("urlSlug", next);
+                          updateEditDraft("canonicalUrl", `https://mocko.ai/blog/${next}`);
+                        }}
+                        className="min-w-0 flex-1 rounded-r-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                      />
+                    </div>
+                  </FieldRow>
+                  <FieldRow label="SEO Title" hint="50-60 chars">
+                    <input
+                      value={editDraft.seoTitle}
+                      onChange={(e) => updateEditDraft("seoTitle", e.target.value)}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    />
+                    <CharBar len={editDraft.seoTitle.length} max={60} />
+                  </FieldRow>
+                  <FieldRow label="Canonical URL">
+                    <input
+                      value={editDraft.canonicalUrl}
+                      onChange={(e) => updateEditDraft("canonicalUrl", e.target.value)}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    />
+                  </FieldRow>
+                  <FieldRow label="Image Alt Text">
+                    <input
+                      value={editDraft.imageAltText}
+                      onChange={(e) => updateEditDraft("imageAltText", e.target.value)}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    />
+                  </FieldRow>
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <FieldRow label="Meta Description" hint="120-160 chars">
+                    <textarea
+                      value={editDraft.metaDescription}
+                      onChange={(e) => updateEditDraft("metaDescription", e.target.value)}
+                      rows={3}
+                      className="w-full resize-none rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    />
+                    <CharBar len={editDraft.metaDescription.length} max={160} />
+                  </FieldRow>
+                  <FieldRow label="OG Description">
+                    <textarea
+                      value={editDraft.ogDescription}
+                      onChange={(e) => updateEditDraft("ogDescription", e.target.value)}
+                      rows={3}
+                      className="w-full resize-none rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500"
+                    />
+                  </FieldRow>
                 </div>
               </div>
 
+              {/* Article markdown */}
+              <FieldRow label="Article Markdown">
+                <textarea
+                  value={editDraft.articleMarkdown}
+                  onChange={(e) => updateEditDraft("articleMarkdown", e.target.value)}
+                  rows={12}
+                  className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm leading-6 text-slate-200 outline-none transition focus:border-blue-500"
+                />
+              </FieldRow>
+
+              {/* Images */}
               <div>
-                <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">Images</h3>
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">Images</h3>
+                  <button
+                    onClick={regenerateImages}
+                    disabled={isCloningRun || generatingImageIds.length > 0}
+                    className="flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isCloningRun || generatingImageIds.length > 0 ? (
+                      <span className="h-3 w-3 animate-spin rounded-full border border-white border-t-transparent" />
+                    ) : (
+                      <Icon name="spark" className="h-3 w-3" />
+                    )}
+                    {generatingImageIds.length > 0 ? "Generating…" : isCloningRun ? "Saving…" : "Regenerate Images"}
+                  </button>
+                </div>
+                <p className="mb-3 text-xs text-slate-600">Regenerating always creates a new history entry.</p>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  {selectedImages
-                    .sort((a, b) => a.angleId - b.angleId)
-                    .map((image) => (
-                      <div key={image.id} className="aspect-video overflow-hidden rounded-xl bg-slate-950">
-                        {image.imageUrl ? (
+                  {[1, 2, 3].map((angleId) => {
+                    const image = selectedImages.find((img) => img.angleId === angleId);
+                    const isGenerating = generatingImageIds.includes(angleId);
+                    return (
+                      <div key={angleId} className="aspect-video overflow-hidden rounded-xl bg-slate-950">
+                        {isGenerating ? (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
+                            <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                            <span className="text-xs">Generating…</span>
+                          </div>
+                        ) : image?.imageUrl ? (
                           <img src={image.imageUrl} alt="" className="h-full w-full object-cover" />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-600">
-                            {image.angleLabel}
+                            {image?.angleLabel ?? `Angle ${angleId}`}
                           </div>
                         )}
                       </div>
-                    ))}
+                    );
+                  })}
                 </div>
               </div>
 
+              {/* Save as new version banner */}
+              {hasEdits ? (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+                  <p className="mb-3 text-sm text-amber-300">
+                    You have unsaved edits. Save as a new entry to preserve the original.
+                  </p>
+                  <button
+                    onClick={saveAsNewVersion}
+                    disabled={isCloningRun}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-600 py-2.5 text-sm font-semibold text-white transition hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isCloningRun ? (
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    ) : null}
+                    {isCloningRun ? "Saving…" : "Save as New History Entry"}
+                  </button>
+                </div>
+              ) : null}
+
+              {/* LinkedIn */}
               <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-950 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">LinkedIn Post</h3>
@@ -2003,6 +2271,7 @@ function HistoryPage({
                 </button>
               </div>
 
+              {/* Action buttons */}
               <div className="flex flex-col gap-3 sm:flex-row">
                 <button
                   onClick={() => sendRunToN8n(selectedRun.id)}
@@ -2026,6 +2295,7 @@ function HistoryPage({
                   Publish to CMS
                 </button>
               </div>
+
             </div>
           </div>
         </div>
