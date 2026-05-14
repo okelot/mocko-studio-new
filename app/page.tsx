@@ -1353,6 +1353,7 @@ function BrandsPage({
           onSave={async (brand) => {
             const result = await postJson<{ brand: Brand }>("/api/brands", {
               userId: data.user?.id,
+              user: data.user,
               brand,
             });
             setData((current) => ({
