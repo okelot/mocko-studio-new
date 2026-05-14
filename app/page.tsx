@@ -21,6 +21,42 @@ import {
   type StudioData,
 } from "@/lib/types";
 
+/** Convert a markdown string to safe HTML for the Article Review panel. */
+function renderMarkdown(md: string): string {
+  if (!md) return "";
+  let html = md
+    // Escape raw HTML to avoid XSS
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    // Headings
+    .replace(/^######\s+(.+)$/gm, "<h6>$1</h6>")
+    .replace(/^#####\s+(.+)$/gm, "<h5>$1</h5>")
+    .replace(/^####\s+(.+)$/gm, "<h4>$1</h4>")
+    .replace(/^###\s+(.+)$/gm, "<h3>$1</h3>")
+    .replace(/^##\s+(.+)$/gm, "<h2>$1</h2>")
+    .replace(/^#\s+(.+)$/gm, "<h1>$1</h1>")
+    // Bold + italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    // Inline code
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    // Unordered lists (simple single-level)
+    .replace(/^[\-\*]\s+(.+)$/gm, "<li>$1</li>")
+    // Ordered lists
+    .replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>")
+    // Horizontal rule
+    .replace(/^---+$/gm, "<hr/>")
+    // Paragraphs: blank lines → paragraph breaks
+    .replace(/\n{2,}/g, "</p><p>")
+    // Single newlines → space (within paragraph)
+    .replace(/\n/g, " ");
+  // Wrap loose li tags in ul
+  html = html.replace(/(<li>.*?<\/li>)+/g, (m) => `<ul>${m}</ul>`);
+  return `<p>${html}</p>`;
+}
+
 const stages: Record<string, { label: string; color: string }> = {
   pending: { label: "Pending", color: "text-slate-400" },
   generating_article: { label: "Generating", color: "text-blue-400" },
@@ -1038,6 +1074,18 @@ function GeneratePage({
                 className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm leading-6 text-slate-200 outline-none transition focus:border-blue-500"
               />
             </FieldRow>
+
+            {/* Article Review */}
+            {draft.articleMarkdown.trim() ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Article Review</p>
+                <div
+                  className="prose prose-invert prose-sm max-w-none text-slate-200 [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-100 [&_h4]:mb-1 [&_h4]:mt-2 [&_h4]:font-semibold [&_h4]:text-slate-200 [&_hr]:my-4 [&_hr]:border-slate-700 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:text-amber-300 [&_em]:italic [&_strong]:font-bold [&_strong]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:mb-3 [&_p]:leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(draft.articleMarkdown) }}
+                />
+              </div>
+            ) : null}
+
             <div className="rounded-xl border border-slate-700 bg-slate-950 p-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Search Preview</p>
               <p className="line-clamp-1 text-[15px] font-medium leading-snug text-blue-300">{draft.seoTitle}</p>
@@ -1730,6 +1778,8 @@ function HistoryPage({
   const [publishingLinkedInRunId, setPublishingLinkedInRunId] = useState<string | null>(null);
   const [linkedinText, setLinkedinText] = useState("");
   const [linkedinImageId, setLinkedinImageId] = useState("");
+  const [isLoadingSharedRun, setIsLoadingSharedRun] = useState(false);
+  const sharedRunFetchRef = useRef<string | null>(null);
 
   const selectedRun = data.runs.find((run) => run.id === selectedRunId) ?? null;
   const selectedBrand = selectedRun
@@ -1743,6 +1793,28 @@ function HistoryPage({
     [data.runs, filterBrand],
   );
 
+  // Fetch a shared run by ID when it isn't in the current user's data (e.g. opened via shared link)
+  useEffect(() => {
+    if (!selectedRunId) return;
+    if (data.runs.find((r) => r.id === selectedRunId)) return; // already loaded
+    if (sharedRunFetchRef.current === selectedRunId) return; // already fetching or fetched
+
+    sharedRunFetchRef.current = selectedRunId;
+    setIsLoadingSharedRun(true);
+    fetch(`/api/runs/${selectedRunId}`)
+      .then((r) => r.json())
+      .then(({ run, error }: { run?: ContentRun; error?: string }) => {
+        if (!run || error) {
+          toast("Shared run not found", "error");
+          return;
+        }
+        setData((c) => ({ ...c, runs: [run, ...c.runs] }));
+      })
+      .catch(() => toast("Could not load shared run", "error"))
+      .finally(() => setIsLoadingSharedRun(false));
+  }, [selectedRunId, data.runs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Set editDraft whenever the selected run changes or first becomes available (e.g. after shared-run fetch)
   useEffect(() => {
     if (!selectedRun) {
       setEditDraft(null);
@@ -1751,6 +1823,7 @@ function HistoryPage({
       setLinkedinImageId("");
       return;
     }
+    if (editDraft?.id === selectedRun.id) return; // already set for this run
     setEditDraft({ ...selectedRun });
     setHasEdits(false);
     const firstImage = [...selectedImages]
@@ -1758,7 +1831,7 @@ function HistoryPage({
       .find((image) => image.imageUrl);
     setLinkedinText(defaultLinkedInText(selectedRun));
     setLinkedinImageId(firstImage?.id ?? "");
-  }, [selectedRunId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedRunId, selectedRun?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function selectRun(runId: string) {
     setSelectedRunId(runId);
@@ -1816,6 +1889,49 @@ function HistoryPage({
     }
   }
 
+  async function regenerateSingleImage(angleId: number) {
+    if (!editDraft) return;
+
+    // Prefer inline brand from local state; fall back to DB lookup via brandId+userId
+    const inlineBrand = data.brands.find((b) => b.id === editDraft.brandId);
+    const brandPayload: Record<string, unknown> = inlineBrand
+      ? { brand: inlineBrand }
+      : data.user
+        ? { brandId: editDraft.brandId, userId: data.user.id }
+        : {};
+
+    if (!inlineBrand && !data.user) {
+      toast("Brand not found", "error");
+      return;
+    }
+
+    setGeneratingImageIds((current) => [...current, angleId]);
+    try {
+      const result = await postJson<{
+        image: { angleId: number; angleLabel: string; prompt: string; imageUrl: string };
+      }>("/api/generate-image", {
+        articleTitle: editDraft.articleTitle,
+        angleId,
+        runId: editDraft.id,
+        ...brandPayload,
+        userFeedback:
+          "Generate a completely fresh, unique visual variation — different composition and style from any previous images",
+      });
+      const image = result.image as GeneratedImage;
+      setData((current) => ({
+        ...current,
+        images: [
+          image,
+          ...current.images.filter((i) => !(i.runId === editDraft.id && i.angleId === image.angleId)),
+        ],
+      }));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not regenerate image", "error");
+    } finally {
+      setGeneratingImageIds((current) => current.filter((id) => id !== angleId));
+    }
+  }
+
   async function regenerateImages() {
     if (!editDraft || !data.user) return;
     const brand = data.brands.find((b) => b.id === editDraft.brandId);
@@ -1849,6 +1965,8 @@ function HistoryPage({
           angleId,
           runId: newRun.id,
           brand,
+          userFeedback:
+            "Generate a completely fresh, unique visual variation — use different composition, colors, and visual elements from any previous images",
         });
         const image = result.image as GeneratedImage;
         setData((current) => ({
@@ -2039,6 +2157,15 @@ function HistoryPage({
         </div>
       )}
 
+      {isLoadingSharedRun && !selectedRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-700/50 bg-[#0f1729] px-10 py-8 shadow-2xl">
+            <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300" />
+            <p className="text-sm text-slate-400">Loading shared entry…</p>
+          </div>
+        </div>
+      )}
+
       {selectedRun && editDraft ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
           <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-700/50 bg-[#0f1729] shadow-2xl">
@@ -2155,6 +2282,17 @@ function HistoryPage({
                 />
               </FieldRow>
 
+              {/* Article Review */}
+              {editDraft.articleMarkdown.trim() ? (
+                <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
+                  <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Article Review</p>
+                  <div
+                    className="prose prose-invert prose-sm max-w-none text-slate-200 [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-100 [&_h4]:mb-1 [&_h4]:mt-2 [&_h4]:font-semibold [&_h4]:text-slate-200 [&_hr]:my-4 [&_hr]:border-slate-700 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:text-amber-300 [&_em]:italic [&_strong]:font-bold [&_strong]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:mb-3 [&_p]:leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(editDraft.articleMarkdown) }}
+                  />
+                </div>
+              ) : null}
+
               {/* Images */}
               <div>
                 <div className="mb-1 flex items-center justify-between gap-3">
@@ -2172,25 +2310,43 @@ function HistoryPage({
                     {generatingImageIds.length > 0 ? "Generating…" : isCloningRun ? "Saving…" : "Regenerate Images"}
                   </button>
                 </div>
-                <p className="mb-3 text-xs text-slate-600">Regenerating always creates a new history entry.</p>
+                <p className="mb-3 text-xs text-slate-600">
+                  "Regenerate Images" creates a new history entry. Individual buttons regenerate in place.
+                </p>
                 <div className="grid gap-3 sm:grid-cols-3">
                   {[1, 2, 3].map((angleId) => {
                     const image = selectedImages.find((img) => img.angleId === angleId);
                     const isGenerating = generatingImageIds.includes(angleId);
+                    const isBusy = isGenerating || isCloningRun;
                     return (
-                      <div key={angleId} className="aspect-video overflow-hidden rounded-xl bg-slate-950">
-                        {isGenerating ? (
-                          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
-                            <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-                            <span className="text-xs">Generating…</span>
-                          </div>
-                        ) : image?.imageUrl ? (
-                          <img src={image.imageUrl} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-600">
-                            {image?.angleLabel ?? `Angle ${angleId}`}
-                          </div>
-                        )}
+                      <div key={angleId} className="group relative overflow-hidden rounded-xl bg-slate-950">
+                        <div className="aspect-video">
+                          {isGenerating ? (
+                            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
+                              <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                              <span className="text-xs">Generating…</span>
+                            </div>
+                          ) : image?.imageUrl ? (
+                            <img src={image.imageUrl} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-600">
+                              {image?.angleLabel ?? `Angle ${angleId}`}
+                            </div>
+                          )}
+                        </div>
+                        {/* Per-image regenerate button */}
+                        <button
+                          onClick={() => regenerateSingleImage(angleId)}
+                          disabled={isBusy}
+                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-blue-600 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {isGenerating ? (
+                            <span className="h-3 w-3 animate-spin rounded-full border border-white border-t-transparent" />
+                          ) : (
+                            <Icon name="spark" className="h-3 w-3" />
+                          )}
+                          {isGenerating ? "…" : "Regenerate"}
+                        </button>
                       </div>
                     );
                   })}
