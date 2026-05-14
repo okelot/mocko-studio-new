@@ -1730,6 +1730,8 @@ function HistoryPage({
   const [publishingLinkedInRunId, setPublishingLinkedInRunId] = useState<string | null>(null);
   const [linkedinText, setLinkedinText] = useState("");
   const [linkedinImageId, setLinkedinImageId] = useState("");
+  const [isLoadingSharedRun, setIsLoadingSharedRun] = useState(false);
+  const sharedRunFetchRef = useRef<string | null>(null);
 
   const selectedRun = data.runs.find((run) => run.id === selectedRunId) ?? null;
   const selectedBrand = selectedRun
@@ -1743,6 +1745,28 @@ function HistoryPage({
     [data.runs, filterBrand],
   );
 
+  // Fetch a shared run by ID when it isn't in the current user's data (e.g. opened via shared link)
+  useEffect(() => {
+    if (!selectedRunId) return;
+    if (data.runs.find((r) => r.id === selectedRunId)) return; // already loaded
+    if (sharedRunFetchRef.current === selectedRunId) return; // already fetching or fetched
+
+    sharedRunFetchRef.current = selectedRunId;
+    setIsLoadingSharedRun(true);
+    fetch(`/api/runs/${selectedRunId}`)
+      .then((r) => r.json())
+      .then(({ run, error }: { run?: ContentRun; error?: string }) => {
+        if (!run || error) {
+          toast("Shared run not found", "error");
+          return;
+        }
+        setData((c) => ({ ...c, runs: [run, ...c.runs] }));
+      })
+      .catch(() => toast("Could not load shared run", "error"))
+      .finally(() => setIsLoadingSharedRun(false));
+  }, [selectedRunId, data.runs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Set editDraft whenever the selected run changes or first becomes available (e.g. after shared-run fetch)
   useEffect(() => {
     if (!selectedRun) {
       setEditDraft(null);
@@ -1751,6 +1775,7 @@ function HistoryPage({
       setLinkedinImageId("");
       return;
     }
+    if (editDraft?.id === selectedRun.id) return; // already set for this run
     setEditDraft({ ...selectedRun });
     setHasEdits(false);
     const firstImage = [...selectedImages]
@@ -1758,7 +1783,7 @@ function HistoryPage({
       .find((image) => image.imageUrl);
     setLinkedinText(defaultLinkedInText(selectedRun));
     setLinkedinImageId(firstImage?.id ?? "");
-  }, [selectedRunId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedRunId, selectedRun?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function selectRun(runId: string) {
     setSelectedRunId(runId);
@@ -1849,6 +1874,8 @@ function HistoryPage({
           angleId,
           runId: newRun.id,
           brand,
+          userFeedback:
+            "Generate a completely fresh, unique visual variation — use different composition, colors, and visual elements from any previous images",
         });
         const image = result.image as GeneratedImage;
         setData((current) => ({
@@ -2036,6 +2063,15 @@ function HistoryPage({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {isLoadingSharedRun && !selectedRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-700/50 bg-[#0f1729] px-10 py-8 shadow-2xl">
+            <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300" />
+            <p className="text-sm text-slate-400">Loading shared entry…</p>
+          </div>
         </div>
       )}
 
