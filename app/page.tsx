@@ -884,6 +884,7 @@ function GeneratePage({
       await postJson<{ postId: string }>("/api/publish-linkedin", {
         accessToken: draftBrand.linkedinAccessToken,
         organizationId: draftLinkedInOrgId,
+        personUrn: draftBrand.linkedinPersonUrn,
         commentary: draftLinkedInText,
         imageUrl: selectedImage.imageUrl,
         altText: draft.imageAltText,
@@ -2088,6 +2089,7 @@ function HistoryPage({
       await postJson<{ postId: string }>("/api/publish-linkedin", {
         accessToken: brand.linkedinAccessToken,
         organizationId: brand.linkedinOrganizationId,
+        personUrn: brand.linkedinPersonUrn,
         commentary: linkedinText,
         imageUrl: image.imageUrl,
         altText: run.imageAltText,

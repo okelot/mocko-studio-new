@@ -104,23 +104,39 @@ export async function exchangeLinkedInCode(params: {
     throw new Error(payload?.error_description || payload?.error || "LinkedIn token exchange failed.");
   }
 
-  return {
-    accessToken: payload.access_token,
-    expiresAt: payload.expires_in
-      ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
-      : null,
-  };
+  const accessToken = payload.access_token;
+  const expiresAt = payload.expires_in
+    ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
+    : null;
+
+  // Fetch the LinkedIn member's person URN via the userInfo endpoint
+  let personUrn: string | null = null;
+  try {
+    const userInfoRes = await fetch("https://api.linkedin.com/v2/userInfo", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (userInfoRes.ok) {
+      const userInfo = (await userInfoRes.json()) as { sub?: string };
+      if (userInfo.sub) personUrn = `urn:li:person:${userInfo.sub}`;
+    }
+  } catch {
+    // Non-fatal — personUrn stays null
+  }
+
+  return { accessToken, expiresAt, personUrn };
 }
 
 export async function publishLinkedInImagePost(params: {
   accessToken: string;
   organizationId: string;
+  personUrn: string | null;
   commentary: string;
   imageUrl: string;
   altText?: string;
 }) {
   const config = getLinkedInConfig();
-  const author = `urn:li:organization:${params.organizationId}`;
+  // Use person URN if available (w_member_social scope), otherwise try org URN (requires w_organization_social)
+  const author = params.personUrn ?? `urn:li:organization:${params.organizationId}`;
   const headers = {
     Authorization: `Bearer ${params.accessToken}`,
     "Content-Type": "application/json",

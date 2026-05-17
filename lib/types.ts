@@ -29,6 +29,7 @@ export interface Brand {
   linkedinOrganizationId: string | null;
   linkedinAccessToken: string | null;
   linkedinAccessTokenExpiresAt: string | null;
+  linkedinPersonUrn: string | null;
   createdAt: string;
   updatedAt: string;
 }

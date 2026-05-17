@@ -30,6 +30,7 @@ export async function GET(request: Request) {
       brandId: parsedState.brandId,
       accessToken: token.accessToken,
       expiresAt: token.expiresAt,
+      personUrn: token.personUrn,
     });
 
     return NextResponse.redirect(parsedState.returnTo || returnTo);
