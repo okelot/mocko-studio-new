@@ -112,16 +112,19 @@ export async function exchangeLinkedInCode(params: {
   // Fetch the LinkedIn member's person URN via the userInfo endpoint
   let personUrn: string | null = null;
   try {
-    const userInfoRes = await fetch("https://api.linkedin.com/v2/userInfo", {
+    const userInfoRes = await fetch("https://api.linkedin.com/v2/userinfo", {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (userInfoRes.ok) {
-      const userInfo = (await userInfoRes.json()) as { sub?: string };
-      if (userInfo.sub) personUrn = `urn:li:person:${userInfo.sub}`;
+    const userInfo = (await userInfoRes.json().catch(() => null)) as { sub?: string; error?: string } | null;
+    console.log("[LinkedIn] userinfo status:", userInfoRes.status, "body:", JSON.stringify(userInfo));
+    if (userInfoRes.ok && userInfo?.sub) {
+      personUrn = `urn:li:person:${userInfo.sub}`;
     }
-  } catch {
+  } catch (err) {
+    console.log("[LinkedIn] userinfo fetch error:", err);
     // Non-fatal — personUrn stays null
   }
+  console.log("[LinkedIn] personUrn resolved:", personUrn);
 
   return { accessToken, expiresAt, personUrn };
 }
