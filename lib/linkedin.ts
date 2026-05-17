@@ -138,8 +138,10 @@ export async function publishLinkedInImagePost(params: {
   altText?: string;
 }) {
   const config = getLinkedInConfig();
-  // Use person URN if available (w_member_social scope), otherwise try org URN (requires w_organization_social)
-  const author = params.personUrn ?? `urn:li:organization:${params.organizationId}`;
+  // Prefer org URN when org ID is provided (requires w_organization_social scope), fall back to person URN
+  const author = params.organizationId
+    ? `urn:li:organization:${params.organizationId}`
+    : (params.personUrn ?? "");
   const headers = {
     Authorization: `Bearer ${params.accessToken}`,
     "Content-Type": "application/json",
