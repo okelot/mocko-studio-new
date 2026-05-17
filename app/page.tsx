@@ -21,6 +21,42 @@ import {
   type StudioData,
 } from "@/lib/types";
 
+/** Convert a markdown string to safe HTML for the Article Review panel. */
+function renderMarkdown(md: string): string {
+  if (!md) return "";
+  let html = md
+    // Escape raw HTML to avoid XSS
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    // Headings
+    .replace(/^######\s+(.+)$/gm, "<h6>$1</h6>")
+    .replace(/^#####\s+(.+)$/gm, "<h5>$1</h5>")
+    .replace(/^####\s+(.+)$/gm, "<h4>$1</h4>")
+    .replace(/^###\s+(.+)$/gm, "<h3>$1</h3>")
+    .replace(/^##\s+(.+)$/gm, "<h2>$1</h2>")
+    .replace(/^#\s+(.+)$/gm, "<h1>$1</h1>")
+    // Bold + italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    // Inline code
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    // Unordered lists (simple single-level)
+    .replace(/^[\-\*]\s+(.+)$/gm, "<li>$1</li>")
+    // Ordered lists
+    .replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>")
+    // Horizontal rule
+    .replace(/^---+$/gm, "<hr/>")
+    // Paragraphs: blank lines → paragraph breaks
+    .replace(/\n{2,}/g, "</p><p>")
+    // Single newlines → space (within paragraph)
+    .replace(/\n/g, " ");
+  // Wrap loose li tags in ul
+  html = html.replace(/(<li>.*?<\/li>)+/g, (m) => `<ul>${m}</ul>`);
+  return `<p>${html}</p>`;
+}
+
 const stages: Record<string, { label: string; color: string }> = {
   pending: { label: "Pending", color: "text-slate-400" },
   generating_article: { label: "Generating", color: "text-blue-400" },
@@ -830,8 +866,8 @@ function GeneratePage({
       toast("Connect LinkedIn in Brands first", "error");
       return;
     }
-    if (!draftLinkedInOrgId.trim()) {
-      toast("Enter the LinkedIn organization ID", "error");
+    if (!draftLinkedInOrgId.trim() && !draftBrand.linkedinPersonUrn) {
+      toast("Enter the LinkedIn organization ID or reconnect LinkedIn to post as yourself", "error");
       return;
     }
     if (!selectedImage?.imageUrl) {
@@ -848,6 +884,7 @@ function GeneratePage({
       await postJson<{ postId: string }>("/api/publish-linkedin", {
         accessToken: draftBrand.linkedinAccessToken,
         organizationId: draftLinkedInOrgId,
+        personUrn: draftBrand.linkedinPersonUrn,
         commentary: draftLinkedInText,
         imageUrl: selectedImage.imageUrl,
         altText: draft.imageAltText,
@@ -1038,6 +1075,18 @@ function GeneratePage({
                 className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm leading-6 text-slate-200 outline-none transition focus:border-blue-500"
               />
             </FieldRow>
+
+            {/* Article Review */}
+            {draft.articleMarkdown.trim() ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Article Review</p>
+                <div
+                  className="prose prose-invert prose-sm max-w-none text-slate-200 [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-100 [&_h4]:mb-1 [&_h4]:mt-2 [&_h4]:font-semibold [&_h4]:text-slate-200 [&_hr]:my-4 [&_hr]:border-slate-700 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:text-amber-300 [&_em]:italic [&_strong]:font-bold [&_strong]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:mb-3 [&_p]:leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(draft.articleMarkdown) }}
+                />
+              </div>
+            ) : null}
+
             <div className="rounded-xl border border-slate-700 bg-slate-950 p-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Search Preview</p>
               <p className="line-clamp-1 text-[15px] font-medium leading-snug text-blue-300">{draft.seoTitle}</p>
@@ -1186,7 +1235,7 @@ function GeneratePage({
                 disabled={
                   isPublishingToLinkedIn ||
                   !draftBrand?.linkedinAccessToken ||
-                  !draftLinkedInOrgId.trim() ||
+                  (!draftLinkedInOrgId.trim() && !draftBrand?.linkedinPersonUrn) ||
                   !draftLinkedInImageId ||
                   !draftLinkedInText.trim()
                 }
@@ -1511,6 +1560,7 @@ function BrandModal({
         linkedinOrganizationId: form.linkedinOrganizationId || null,
         linkedinAccessToken: form.linkedinAccessToken,
         linkedinAccessTokenExpiresAt: form.linkedinAccessTokenExpiresAt,
+        linkedinPersonUrn: brand?.linkedinPersonUrn ?? null,
         logoUrl: form.logoUrl,
         styleImageUrl: form.styleImageUrl,
         createdAt: brand?.createdAt ?? timestamp,
@@ -1842,9 +1892,17 @@ function HistoryPage({
   }
 
   async function regenerateSingleImage(angleId: number) {
-    if (!editDraft || !data.user) return;
-    const brand = data.brands.find((b) => b.id === editDraft.brandId);
-    if (!brand) {
+    if (!editDraft) return;
+
+    // Prefer inline brand from local state; fall back to DB lookup via brandId+userId
+    const inlineBrand = data.brands.find((b) => b.id === editDraft.brandId);
+    const brandPayload: Record<string, unknown> = inlineBrand
+      ? { brand: inlineBrand }
+      : data.user
+        ? { brandId: editDraft.brandId, userId: data.user.id }
+        : {};
+
+    if (!inlineBrand && !data.user) {
       toast("Brand not found", "error");
       return;
     }
@@ -1857,7 +1915,7 @@ function HistoryPage({
         articleTitle: editDraft.articleTitle,
         angleId,
         runId: editDraft.id,
-        brand,
+        ...brandPayload,
         userFeedback:
           "Generate a completely fresh, unique visual variation — different composition and style from any previous images",
       });
@@ -2015,8 +2073,8 @@ function HistoryPage({
       toast("Run or brand not found", "error");
       return;
     }
-    if (!brand.linkedinOrganizationId || !brand.linkedinAccessToken) {
-      toast("Connect LinkedIn and add the organization ID in Brands first", "error");
+    if (!brand.linkedinAccessToken || (!brand.linkedinOrganizationId && !brand.linkedinPersonUrn)) {
+      toast("Connect LinkedIn in Brands first", "error");
       return;
     }
     if (!image?.imageUrl) {
@@ -2032,6 +2090,7 @@ function HistoryPage({
       await postJson<{ postId: string }>("/api/publish-linkedin", {
         accessToken: brand.linkedinAccessToken,
         organizationId: brand.linkedinOrganizationId,
+        personUrn: brand.linkedinPersonUrn,
         commentary: linkedinText,
         imageUrl: image.imageUrl,
         altText: run.imageAltText,
@@ -2226,6 +2285,17 @@ function HistoryPage({
                 />
               </FieldRow>
 
+              {/* Article Review */}
+              {editDraft.articleMarkdown.trim() ? (
+                <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
+                  <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Article Review</p>
+                  <div
+                    className="prose prose-invert prose-sm max-w-none text-slate-200 [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-100 [&_h4]:mb-1 [&_h4]:mt-2 [&_h4]:font-semibold [&_h4]:text-slate-200 [&_hr]:my-4 [&_hr]:border-slate-700 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:text-amber-300 [&_em]:italic [&_strong]:font-bold [&_strong]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-0.5 [&_p]:mb-3 [&_p]:leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(editDraft.articleMarkdown) }}
+                  />
+                </div>
+              ) : null}
+
               {/* Images */}
               <div>
                 <div className="mb-1 flex items-center justify-between gap-3">
@@ -2271,14 +2341,14 @@ function HistoryPage({
                         <button
                           onClick={() => regenerateSingleImage(angleId)}
                           disabled={isBusy}
-                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-blue-600 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {isGenerating ? (
                             <span className="h-3 w-3 animate-spin rounded-full border border-white border-t-transparent" />
                           ) : (
                             <Icon name="spark" className="h-3 w-3" />
                           )}
-                          Regenerate
+                          {isGenerating ? "…" : "Regenerate"}
                         </button>
                       </div>
                     );
@@ -2345,7 +2415,7 @@ function HistoryPage({
                   disabled={
                     publishingLinkedInRunId === selectedRun.id ||
                     !selectedBrand?.linkedinAccessToken ||
-                    !selectedBrand?.linkedinOrganizationId ||
+                    (!selectedBrand?.linkedinOrganizationId && !selectedBrand?.linkedinPersonUrn) ||
                     !linkedinImageId ||
                     !linkedinText.trim()
                   }

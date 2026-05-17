@@ -6,12 +6,13 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       accessToken?: string;
       organizationId?: string;
+      personUrn?: string | null;
       commentary?: string;
       imageUrl?: string;
       altText?: string;
     };
 
-    if (!body.accessToken || !body.organizationId) {
+    if (!body.accessToken || (!body.organizationId && !body.personUrn)) {
       return NextResponse.json({ error: "LinkedIn connection is not configured for this brand." }, { status: 400 });
     }
     if (!body.commentary?.trim()) {
@@ -23,7 +24,8 @@ export async function POST(request: Request) {
 
     const postId = await publishLinkedInImagePost({
       accessToken: body.accessToken,
-      organizationId: body.organizationId,
+      organizationId: body.organizationId ?? "",
+      personUrn: body.personUrn ?? null,
       commentary: body.commentary.trim(),
       imageUrl: body.imageUrl,
       altText: body.altText,

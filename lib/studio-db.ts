@@ -159,6 +159,7 @@ export async function updateBrandLinkedInOAuth(params: {
   brandId: string;
   accessToken: string;
   expiresAt: string | null;
+  personUrn: string | null;
 }) {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
@@ -166,6 +167,7 @@ export async function updateBrandLinkedInOAuth(params: {
     .update({
       linkedin_access_token: params.accessToken,
       linkedin_access_token_expires_at: params.expiresAt,
+      linkedin_person_urn: params.personUrn,
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.brandId)
@@ -316,6 +318,7 @@ export function toBrand(row: any): Brand {
     linkedinOrganizationId: row.linkedin_organization_id || null,
     linkedinAccessToken: row.linkedin_access_token || null,
     linkedinAccessTokenExpiresAt: row.linkedin_access_token_expires_at || null,
+    linkedinPersonUrn: row.linkedin_person_urn || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at || row.created_at,
   };
