@@ -1560,6 +1560,7 @@ function BrandModal({
         linkedinOrganizationId: form.linkedinOrganizationId || null,
         linkedinAccessToken: form.linkedinAccessToken,
         linkedinAccessTokenExpiresAt: form.linkedinAccessTokenExpiresAt,
+        linkedinPersonUrn: brand?.linkedinPersonUrn ?? null,
         logoUrl: form.logoUrl,
         styleImageUrl: form.styleImageUrl,
         createdAt: brand?.createdAt ?? timestamp,

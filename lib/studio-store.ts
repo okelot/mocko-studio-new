@@ -27,6 +27,7 @@ const demoBrands: Brand[] = [
     linkedinOrganizationId: null,
     linkedinAccessToken: null,
     linkedinAccessTokenExpiresAt: null,
+    linkedinPersonUrn: null,
     createdAt: now,
     updatedAt: now,
   },
