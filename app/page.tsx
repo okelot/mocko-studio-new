@@ -866,8 +866,8 @@ function GeneratePage({
       toast("Connect LinkedIn in Brands first", "error");
       return;
     }
-    if (!draftLinkedInOrgId.trim()) {
-      toast("Enter the LinkedIn organization ID", "error");
+    if (!draftLinkedInOrgId.trim() && !draftBrand.linkedinPersonUrn) {
+      toast("Enter the LinkedIn organization ID or reconnect LinkedIn to post as yourself", "error");
       return;
     }
     if (!selectedImage?.imageUrl) {
@@ -1235,7 +1235,7 @@ function GeneratePage({
                 disabled={
                   isPublishingToLinkedIn ||
                   !draftBrand?.linkedinAccessToken ||
-                  !draftLinkedInOrgId.trim() ||
+                  (!draftLinkedInOrgId.trim() && !draftBrand?.linkedinPersonUrn) ||
                   !draftLinkedInImageId ||
                   !draftLinkedInText.trim()
                 }
@@ -2073,8 +2073,8 @@ function HistoryPage({
       toast("Run or brand not found", "error");
       return;
     }
-    if (!brand.linkedinOrganizationId || !brand.linkedinAccessToken) {
-      toast("Connect LinkedIn and add the organization ID in Brands first", "error");
+    if (!brand.linkedinAccessToken || (!brand.linkedinOrganizationId && !brand.linkedinPersonUrn)) {
+      toast("Connect LinkedIn in Brands first", "error");
       return;
     }
     if (!image?.imageUrl) {
@@ -2415,7 +2415,7 @@ function HistoryPage({
                   disabled={
                     publishingLinkedInRunId === selectedRun.id ||
                     !selectedBrand?.linkedinAccessToken ||
-                    !selectedBrand?.linkedinOrganizationId ||
+                    (!selectedBrand?.linkedinOrganizationId && !selectedBrand?.linkedinPersonUrn) ||
                     !linkedinImageId ||
                     !linkedinText.trim()
                   }
