@@ -135,8 +135,12 @@ export async function publishLinkedInImagePost(params: {
   altText?: string;
 }) {
   const config = getLinkedInConfig();
-  // Use person URN if available (w_member_social scope), otherwise try org URN (requires w_organization_social)
-  const author = params.personUrn ?? `urn:li:organization:${params.organizationId}`;
+  const author = params.organizationId
+    ? `urn:li:organization:${params.organizationId}`
+    : params.personUrn;
+  if (!author) {
+    throw new Error("LinkedIn connection is missing an organization ID or person URN.");
+  }
   const headers = {
     Authorization: `Bearer ${params.accessToken}`,
     "Content-Type": "application/json",
