@@ -135,8 +135,9 @@ export async function publishLinkedInImagePost(params: {
   altText?: string;
 }) {
   const config = getLinkedInConfig();
-  const author = params.organizationId
-    ? `urn:li:organization:${params.organizationId}`
+  const organizationId = normalizeLinkedInOrganizationId(params.organizationId);
+  const author = organizationId
+    ? `urn:li:organization:${organizationId}`
     : params.personUrn;
   if (!author) {
     throw new Error("LinkedIn connection is missing an organization ID or person URN.");
@@ -208,4 +209,11 @@ export async function publishLinkedInImagePost(params: {
   }
 
   return postResponse.headers.get("x-restli-id") || "";
+}
+
+function normalizeLinkedInOrganizationId(value: string) {
+  const trimmed = value.trim();
+  const urnMatch = trimmed.match(/^urn:li:organization:(\d+)$/);
+  if (urnMatch) return urnMatch[1];
+  return /^\d+$/.test(trimmed) ? trimmed : "";
 }
